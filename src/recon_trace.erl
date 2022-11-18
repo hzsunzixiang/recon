@@ -139,13 +139,13 @@
 %%% [shell] ---> [tracer process] ----> [formatter]
 %%% '''
 %%%
-%%% The tracer process receives trace messages from the node, and enforces
-%%% limits in absolute terms or trace rates, before forwarding the messages
-%%% to the formatter. This is done so the tracer can do as little work as
-%%% possible and never block while building up a large mailbox.
+%%% The tracer process receives trace messages from the node, and enforces   % [tracer process] 负责接收消息
+%%% limits in absolute terms or trace rates, before forwarding the messages  % 加上速率限制，然后转发给 [formatter] 进程
+%%% to the formatter. This is done so the tracer can do as little work as    % [formatter] 进程来主要处理这些消息
+%%% possible and never block while building up a large mailbox.              % 这样可以防止 [tracer process] 过于安陆造成mailbox阻塞
 %%%
-%%% The tracer process is linked to the shell, and the formatter to the
-%%% tracer process. The formatter also traps exits to be able to handle
+%%% The tracer process is linked to the shell, and the formatter to the      % [tracer process] link 到shell进程
+%%% tracer process. The formatter also traps exits to be able to handle      % [formatter] link 到 [tracer process] 进程
 %%% all received trace messages until the tracer termination, but will then
 %%% shut down as soon as possible.
 %%%
@@ -335,9 +335,9 @@ calls(TSpecs = [_|_], Max) ->
 -spec calls(tspec() | [tspec(),...], max(), options()) -> num_matches().
 
 calls({Mod, Fun, Args}, Max, Opts) ->
-    calls([{Mod,Fun,Args}], Max, Opts);
+    calls([{Mod,Fun,Args}], Max, Opts);   % 转换成数组形式, 统一调用
 calls(TSpecs = [_|_], {Max, Time}, Opts) ->
-    Pid = setup(rate_tracer, [Max, Time],
+    Pid = setup(rate_tracer, [Max, Time],  % 这里返回的是 Tracer 进程，也就是接手trace信息的进程
                 validate_formatter(Opts), validate_io_server(Opts)),
     trace_calls(TSpecs, Pid, Opts);
 calls(TSpecs = [_|_], Max, Opts) ->
@@ -349,12 +349,12 @@ calls(TSpecs = [_|_], Max, Opts) ->
 %%% PRIVATE EXPORTS %%%
 %%%%%%%%%%%%%%%%%%%%%%%
 %% @private Stops when N trace messages have been received
-count_tracer(0) ->
+count_tracer(0) ->   % 这个函数非常精简，就是输出，然后递归
     exit(normal);
 count_tracer(N) ->
     receive
         Msg ->
-            recon_trace_formatter ! Msg,
+            recon_trace_formatter ! Msg,  % recon_trace_formatter 在setup的时候注册, 发送到这个进程进行格式化
             count_tracer(N-1)
     end.
 
@@ -369,7 +369,7 @@ rate_tracer(Max, Time) -> rate_tracer(Max, Time, 0, os:timestamp()).
 rate_tracer(Max, Time, Count, Start) ->
     receive
         Msg ->
-            recon_trace_formatter ! Msg,
+            recon_trace_formatter ! Msg,   % 收到的消息直接转给 recon_trace_formatter 然后再做其他事情
             Now = os:timestamp(),
             Delay = timer:now_diff(Now, Start) div 1000,
             if Delay > Time -> rate_tracer(Max, Time, 0, Now)
@@ -380,14 +380,16 @@ rate_tracer(Max, Time, Count, Start) ->
 
 %% @private Formats traces to be output
 formatter(Tracer, Parent, Ref, FormatterFun, IOServer) ->
-    process_flag(trap_exit, true),
-    link(Tracer),
-    Parent ! {Ref, linked},
+    % 这里调用  Format = spawn(?MODULE, formatter, [Tracer, self(), Ref, FormatterFun, IOServer]),  
+    process_flag(trap_exit, true),  
+	% 设置 trap_exit 标志位 When trap_exit is set to true, exit signals arriving to a process are converted to {'EXIT', From, Reason} messages, which can be received as ordinary messages.
+    link(Tracer), % A link is bidirectional.
+    Parent ! {Ref, linked},   %  receive {Ref, linked} -> Tracer
     formatter(Tracer, IOServer, FormatterFun).
 
 formatter(Tracer, IOServer, FormatterFun) ->
     receive
-        {'EXIT', Tracer, normal} ->
+        {'EXIT', Tracer, normal} ->  % 跟 Tracer进程 关联起来， 所以退出信号是 Tracer发出的
             io:format("Recon tracer rate limit tripped.~n"),
             exit(normal);
         {'EXIT', Tracer, Reason} ->
@@ -407,32 +409,43 @@ formatter(Tracer, IOServer, FormatterFun) ->
 setup(TracerFun, TracerArgs, FormatterFun, IOServer) ->
     clear(),
     Ref = make_ref(),
-    Tracer = spawn_link(?MODULE, TracerFun, TracerArgs),
-    register(recon_trace_tracer, Tracer),
-    Format = spawn(?MODULE, formatter, [Tracer, self(), Ref, FormatterFun, IOServer]),
+    Tracer = spawn_link(?MODULE, TracerFun, TracerArgs),  %  起一个进程，运行 TracerFun 也就是 rate_tracer 或者 count_tracer
+    register(recon_trace_tracer, Tracer),                 %  为这个进程注册一个名字 recon_trace_tracer
+    Format = spawn(?MODULE, formatter, [Tracer, self(), Ref, FormatterFun, IOServer]),  % 这个负责格式化trace数据
     register(recon_trace_formatter, Format),
     receive
-        {Ref, linked} -> Tracer
+        {Ref, linked} -> Tracer  % Parent ! {Ref, linked},
     after 5000 ->
         error(setup_failed)
     end.
 
+% matchspec() = [{[term()] | '_', [term()], [term()]}]
+% shellfun() = fun((term()) -> term())
+% args 中可以包含 shellfun() 或者 matchspec() :  args() = '_' | 0..255 | return_trace | matchspec() | shellfun()
 %% Sets the traces in action
 trace_calls(TSpecs, Pid, Opts) ->
+%options() = [{pid, pidspec() | [pidspec(), ...]} | {timestamp, formatter | trace} | {args, args | arity} | {io_server, pid() | atom()} | {formatter, formatterfun()} | return_to | {return_to, boolean()} | {scope, global | local}]
     {PidSpecs, TraceOpts, MatchOpts} = validate_opts(Opts),
+	% tspec() = {mod(), fn(), args()}
     Matches = [begin
                 {Arity, Spec} = validate_tspec(Mod, Fun, Args),
                 erlang:trace_pattern({Mod, Fun, Arity}, Spec, MatchOpts)
                end || {Mod, Fun, Args} <- TSpecs],
     [erlang:trace(PidSpec, true, [call, {tracer, Pid} | TraceOpts])
      || PidSpec <- PidSpecs],
-    lists:sum(Matches).
+    lists:sum(Matches).   % 匹配的数量相加
 
+% erlang:trace(PidPortSpec, How, FlagList) -> integer()
+% {tracer, Tracer}
+% Specifies where to send the trace messages. Tracer must be the process identifier of a local process or the port identifier of a local port.
 
 %%%%%%%%%%%%%%%%%%
 %%% VALIDATION %%%
 %%%%%%%%%%%%%%%%%%
 
+% options() = [{pid, pidspec() | [pidspec(), ...]} | {timestamp, formatter | trace} | 
+%              {args, args | arity} | {io_server, pid() | atom()} | {formatter, formatterfun()} | 
+%              return_to | {return_to, boolean()} | {scope, global | local}]
 validate_opts(Opts) ->
     PidSpecs = validate_pid_specs(proplists:get_value(pid, Opts, all)),
     Scope = proplists:get_value(scope, Opts, global),
@@ -459,6 +472,8 @@ validate_opts(Opts) ->
 
 %% Support the regular specs, but also allow `recon:pid_term()' and lists
 %% of further pid specs.
+%  pidspec() = all | existing | new | recon:pid_term()
+%  [{pid, [{via, gproc, Name}, new]}
 -spec validate_pid_specs(pidspec() | [pidspec(),...]) ->
     [all | new | existing | pid(), ...].
 validate_pid_specs(all) -> [all];
@@ -477,10 +492,11 @@ validate_pid_specs(PidTerm) ->
     %% has to be `recon:pid_term()'.
     [recon_lib:term_to_pid(PidTerm)].
 
+% args 中可以包含 shellfun() 或者 matchspec() :  args() = '_' | 0..255 | return_trace | matchspec() | shellfun()
 validate_tspec(Mod, Fun, Args) when is_function(Args) ->
     validate_tspec(Mod, Fun, fun_to_ms(Args));
 %% helper to save typing for common actions
-validate_tspec(Mod, Fun, return_trace) ->
+validate_tspec(Mod, Fun, return_trace) ->   % 如果是 return_trace ,封装一层
     validate_tspec(Mod, Fun, [{'_', [], [{return_trace}]}]);
 validate_tspec(Mod, Fun, Args) ->
     BannedMods = ['_', ?MODULE, io, lists],
@@ -497,14 +513,14 @@ validate_tspec(Mod, Fun, Args) ->
         _ when Args >= 0, Args =< 255 -> {Args, true}
     end.
 
-validate_formatter(Opts) ->
+validate_formatter(Opts) ->  % 校验 formatter 参数  {formatter, formatterfun()}    formatterfun() = fun((term()) -> iodata())
     case proplists:get_value(formatter, Opts) of
-        F when is_function(F, 1) -> F;
-        _ -> fun format/1
+        F when is_function(F, 1) -> F;   % is_function(Term, Arity) -> boolean()
+        _ -> fun format/1                % 默认值
     end.
 
-validate_io_server(Opts) ->
-    proplists:get_value(io_server, Opts, group_leader()).
+validate_io_server(Opts) ->  % {io_server, pid() | atom()}
+    proplists:get_value(io_server, Opts, group_leader()).  % 如果获取不到，取默认值 group_leader()
 
 %%%%%%%%%%%%%%%%%%%%%%%%
 %%% TRACE FORMATTING %%%
